@@ -36,7 +36,7 @@ def model_fz_level(model, lat_mf, lon_mf, date):
 
     model_res = 'conusnest'
     if model == 'gfs': model_res = '0p25'
-    ds = GRIB_DL(model=model, model_resolution=model_res, date=date)
+    ds = GRIB_DL(model=model, model_run='06z', model_resolution=model_res, date=date)
     #gfs_ds = GRIB_DL(model='gfs', model_resolution='0p25', date='20191230')
     #nn_ds = GRIB_DL(model='nam', model_run='12z', model_resolution='conusnest', date='20191230')
 
@@ -93,7 +93,7 @@ def create_plot(df, model):
     xaxis_uplimit = datetime.now(pytz.timezone('US/Pacific')) + timedelta(days=9)
     ax1.set_xlim([xaxis_lowlimit, xaxis_uplimit])
 
-    ax1.set_ylabel('Snow Level', color=color)
+    ax1.set_ylabel('Snow Level (ft)', color=color)
     #ax1.set_xlabel('Date')
     ax1.set_ylim([0.0, 10000])
     #ax1.yaxis.grid(True)
@@ -124,7 +124,7 @@ def create_plot(df, model):
     ax2.set_ylim([0.0, 3.0])
     ax2.xaxis.set_major_formatter(date_format)
     color = 'tab:green'
-    ax2.set_ylabel('QPF', color=color)
+    ax2.set_ylabel('24-hour Precip Forecast (inches)', color=color)
     qpf_bar = ax2.bar(daily_df.index, daily_df[f'qpf_hr_{model}'], color=color, alpha=0.7,
             label="Total Precip")
     sn_qpf_bar = ax2.bar(daily_df.index, daily_df[f'snow_hr_{model}'], color='tab:blue', alpha=0.7,
@@ -190,7 +190,7 @@ def create_plot(df, model):
     plt.savefig(os.path.join(imgdir, 'qpf_graph.png'))
 
     #gradient_bar(df, xaxis_lowlimit, xaxis_uplimit)
-    plt.show()
+    # plt.show()
     return
 
 def gradient_fill(x, y, fill_color=None, ax=None, **kwargs):
@@ -250,7 +250,7 @@ def gradient_fill(x, y, fill_color=None, ax=None, **kwargs):
     xaxis_uplimit = datetime.now(pytz.timezone('US/Pacific')) + timedelta(days=9)
     ax.set_xlim([xaxis_lowlimit, xaxis_uplimit])
 
-    ax.set_ylabel('Snow Level', color='blue')
+    ax.set_ylabel('Snow Level (ft)', color='blue')
     ax.set_xlabel('Date')
     ax.set_ylim([0.0, 10000])
 
