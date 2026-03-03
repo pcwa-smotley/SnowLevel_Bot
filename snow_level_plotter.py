@@ -80,120 +80,169 @@ def xarr_to_dataframe(ds, name):
     return df
 
 def create_plot(df, model):
-    fig, ax1 = plt.subplots()
-    plt.title('Precipitation and Snow Level Forecast: Middle Fork')
+    fig, ax1 = plt.subplots(figsize=(14, 8), dpi=180, facecolor='#0b1220')
+    ax1.set_facecolor('#111827')
+    ax1.patch.set_edgecolor('#334155')
+    ax1.patch.set_linewidth(1.2)
 
-    color = 'tab:blue'
+    qpf_col = f'qpf_hr_{model}'
+    snow_qpf_col = f'snow_hr_{model}'
+    snow_level_col = f'snowLevel_{model}'
     daily_df = df.resample('d').sum(numeric_only=True)
-    date_format = mdates.DateFormatter("%a %m/%d")
-    ax1.xaxis.set_major_formatter(date_format)
 
     xaxis_lowlimit = datetime.now(pytz.timezone('US/Pacific'))
     xaxis_uplimit = datetime.now(pytz.timezone('US/Pacific')) + timedelta(days=9)
     ax1.set_xlim([xaxis_lowlimit, xaxis_uplimit])
-
-    ax1.set_ylabel('Snow Level (ft)', color=color)
-    #ax1.set_xlabel('Date')
     ax1.set_ylim([0.0, 10000])
-    #ax1.yaxis.grid(True)
 
-    # --Start-- Create a color gradient under the curve
-    alpha = 1.0
-    z = np.empty((100, 1, 4), dtype=float)
-    rgb = mcolors.colorConverter.to_rgb(color)
-    z[:, :, :3] = rgb
-    z[:, :, -1] = np.linspace(0, alpha, 100)[:, None]
+    snow_line_color = '#7dd3fc'
+    snow_fill_color = '#0284c7'
+    total_bar_color = '#22c55e'
+    cold_bar_color = '#3b82f6'
+    text_color = '#f8fafc'
+    subtext_color = '#cbd5e1'
+    grid_color = '#253247'
 
-    snow_series = df[f'snowLevel_{model}'].dropna()
-    if not snow_series.empty and snow_series.shape[0] > 1:
-        xvals = mdates.date2num(snow_series.index.values)
-        yvals = snow_series.values
-        xmin, xmax, ymin, ymax = xvals.min(), xvals.max(), 0, 10000
+    fig.suptitle(
+        'Middle Fork Forecast: Snow Level and Liquid Precipitation',
+        x=0.06,
+        y=0.985,
+        ha='left',
+        va='top',
+        fontsize=24,
+        fontweight='bold',
+        color=text_color,
+    )
+    fig.text(
+        0.06,
+        0.94,
+        'Green bars = Total daily precip. Blue bars = Portion of daily precip falling as snow',
+        ha='left',
+        va='top',
+        fontsize=13,
+        color=subtext_color,
+    )
 
-        im = ax1.imshow(z, aspect='auto', extent=[xmin, xmax, ymin, ymax],
-                       origin='lower', zorder=1)
-
-        xy = np.column_stack([xvals, yvals])
-        xy = np.vstack([[xmin, ymin], xy, [xmax, ymin], [xmin, ymin]])
-        clip_path = Polygon(xy, facecolor='none', edgecolor='none', closed=True)
-        ax1.add_patch(clip_path)
-        im.set_clip_path(clip_path)
-        line = ax1.plot(xvals, yvals, color=[0, 57/255, 148/255], label="Snow Level")
+    snow_series = df[snow_level_col].dropna()
+    if not snow_series.empty:
+        ax1.plot(
+            snow_series.index,
+            snow_series.values,
+            color=snow_line_color,
+            linewidth=3.4,
+            label='Snow Level (ft)',
+            zorder=4,
+        )
+        ax1.fill_between(
+            snow_series.index,
+            0,
+            snow_series.values,
+            color=snow_fill_color,
+            alpha=0.20,
+            zorder=3,
+        )
     else:
-        line = ax1.plot([], [], color=[0, 57/255, 148/255], label="Snow Level")
-    # --End-- Color Gradient
+        ax1.plot([], [], color=snow_line_color, linewidth=3.4, label='Snow Level (ft)')
+
+    ax1.axhline(5000, color='#64748b', linestyle='--', linewidth=1.2, zorder=2)
+    ax1.text(
+        xaxis_lowlimit + timedelta(hours=8),
+        5160,
+        '5000 ft threshold',
+        color='#cbd5e1',
+        fontsize=10,
+        bbox=dict(boxstyle='round,pad=0.22', facecolor='#0f172a', edgecolor='#475569', alpha=0.96),
+    )
+
+    ax1.set_ylabel('Snow Level (ft)', color=snow_line_color, fontsize=14, fontweight='bold')
+    ax1.tick_params(axis='y', colors='#bae6fd', labelsize=12)
+    ax1.yaxis.set_major_formatter(ticker.StrMethodFormatter('{x:,.0f}'))
+    ax1.grid(axis='y', color=grid_color, linewidth=1.0, alpha=1.0)
+    ax1.grid(axis='x', color='#1e293b', linewidth=0.9, alpha=0.9)
+    ax1.set_axisbelow(True)
 
     ax2 = ax1.twinx()
-    ax2.set_ylim([0.0, 3.0])
-    ax2.xaxis.set_major_formatter(date_format)
-    color = 'tab:green'
-    ax2.set_ylabel('24-hour Precip Forecast (inches)', color=color)
-    qpf_bar = ax2.bar(daily_df.index, daily_df[f'qpf_hr_{model}'], color=color, alpha=0.7,
-            label="Total Precip")
-    sn_qpf_bar = ax2.bar(daily_df.index, daily_df[f'snow_hr_{model}'], color='tab:blue', alpha=0.7,
-            label="Precip with Snow Level <= 5000 ft")
+    qpf_axis_top = 4.0
+    ax2.set_ylim([0.0, qpf_axis_top])
+    ax2.set_ylabel('24-hour Liquid Precip (inches)', color='#86efac', fontsize=14, fontweight='bold')
+    ax2.tick_params(axis='y', colors='#86efac', labelsize=12)
+    ax2.yaxis.set_major_formatter(ticker.StrMethodFormatter('{x:.2f}"'))
 
-    rects = ax2.patches
-    # Make some labels.
-    (y_bottom, y_top) = ax2.get_ylim()
-    y_height = y_top - y_bottom
+    qpf_bar = ax2.bar(
+        daily_df.index,
+        daily_df[qpf_col],
+        width=0.82,
+        color=total_bar_color,
+        alpha=0.88,
+        edgecolor='#0f172a',
+        linewidth=0.9,
+        label='Total Liquid Precip',
+        zorder=1,
+    )
+    sn_qpf_bar = ax2.bar(
+        daily_df.index,
+        daily_df[snow_qpf_col],
+        width=0.52,
+        color=cold_bar_color,
+        alpha=0.98,
+        edgecolor='#0f172a',
+        linewidth=0.9,
+        label='Precip w/ Snow Level <= 5000 ft',
+        zorder=2,
+    )
 
-    for rect_cnt, rect in enumerate(rects):
-        height = rect.get_height()
-        label = height
-        # If a precip value is off the chart, put the label at the top of the bar so the value is known.
-        if height > y_top:
-            height = y_top - 0.06
+    for dt, total in zip(daily_df.index, daily_df[qpf_col]):
+        if dt < xaxis_lowlimit or dt > xaxis_uplimit or total < 0.05:
+            continue
+        ax2.text(
+            dt,
+            min(total + (qpf_axis_top * 0.022), qpf_axis_top * 0.985),
+            f'{total:.2f}"',
+            ha='center',
+            va='bottom',
+            fontsize=14,
+            fontweight='bold',
+            color='#f8fafc',
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='#0f172a', edgecolor='#334155', alpha=0.97),
+            zorder=5,
+        )
 
-        label_position = height + (y_height * 0.01)
+    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%a %m/%d"))
+    ax1.tick_params(axis='x', labelsize=13, colors=text_color, pad=10)
+    for label in ax1.get_xticklabels():
+        label.set_fontweight('semibold')
 
-        # Since the 06Z run will include forecast times valid yesterday, we want to remove those from the graph
-        # if we don't include this if statement first, it will plot values along the -side of the x axis (in the
-        # margins).
-        if rect.get_x() > mdates.date2num(xaxis_lowlimit):
-            # First group of bars (qpf)
-            if len(rects)/2 > rect_cnt:
-                ax2.text(rect.get_x() + rect.get_width() / 2., label_position,
-                        f'{str(round(label,2))}',
-                        ha='center', va='bottom', color='darkgreen')
+    for spine in ['top']:
+        ax1.spines[spine].set_visible(False)
+        ax2.spines[spine].set_visible(False)
+    ax1.spines['left'].set_color('#64748b')
+    ax1.spines['bottom'].set_color('#64748b')
+    ax2.spines['right'].set_color('#64748b')
 
-            # Second group of bars (frozen qpf)
-            else:
-                label_position = height - (y_height * 0.07)
-                if height > 0.3:
-                    ax2.text(rect.get_x() + rect.get_width() / 2., label_position,
-                             f'{str(round(label, 2))}',
-                             ha='center', va='bottom', color='blue')
+    fig.subplots_adjust(left=0.08, right=0.92, top=0.82, bottom=0.2)
+    snow_handle = ax1.lines[0]
+    legend = fig.legend(
+        handles=[qpf_bar, sn_qpf_bar, snow_handle],
+        labels=['Total Liquid Precip', 'Precip w/ Snow Level <= 5000 ft', 'Snow Level (ft)'],
+        loc='lower center',
+        bbox_to_anchor=(0.5, 0.05),
+        ncol=3,
+        frameon=True,
+        fancybox=True,
+        framealpha=0.98,
+        borderpad=0.6,
+        fontsize=12,
+        columnspacing=1.8,
+    )
+    legend.get_frame().set_facecolor('#0f172a')
+    legend.get_frame().set_edgecolor('#334155')
+    legend.get_frame().set_linewidth(1.0)
+    for txt in legend.get_texts():
+        txt.set_color('#e2e8f0')
 
-
-    ax1.set_zorder(ax2.get_zorder() + 1)  # put ax1 in front of ax2
-    #ax1.xaxis.set_major_locator(ticker.MultipleLocator(xaxis_tick_spacing))
-    ax1.patch.set_visible(False)  # hide the 'canvas'
-    fig.autofmt_xdate()
-    ax1.tick_params(axis='x', rotation=30)
-
-    # Get labels for the legend from both axis, then display legend at below the dates.
-    handles, labels = [], []
-    for ax in fig.axes:
-        for h, l in zip(*ax.get_legend_handles_labels()):
-            handles.append(h)
-            labels.append(l)
-
-    # Reorder the labels in legend as Total Precip, Snow, Snow Level.
-    myorder = [1,2,0]
-    handles = [handles[i] for i in myorder]
-    labels = [labels[i] for i in myorder]
-
-    # Give the bottom of the plot some extra room for the legend
-    fig.subplots_adjust(bottom=0.25)
-
-    # Add the legend to the plot
-    plt.legend(handles=handles, labels=labels, bbox_to_anchor=(1, 0), loc="lower right",
-               bbox_transform=fig.transFigure, frameon=False, ncol=3)
-    plt.savefig(os.path.join(imgdir, 'qpf_graph.png'))
-
-    #gradient_bar(df, xaxis_lowlimit, xaxis_uplimit)
-    # plt.show()
+    plt.savefig(os.path.join(imgdir, 'qpf_graph.png'), dpi=230, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.close(fig)
     return
 
 def gradient_fill(x, y, fill_color=None, ax=None, **kwargs):
