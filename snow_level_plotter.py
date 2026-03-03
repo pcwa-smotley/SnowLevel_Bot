@@ -40,10 +40,8 @@ def model_fz_level(model, lat_mf, lon_mf, date):
     #gfs_ds = GRIB_DL(model='gfs', model_resolution='0p25', date='20191230')
     #nn_ds = GRIB_DL(model='nam', model_run='12z', model_resolution='conusnest', date='20191230')
 
-    sd = (ds.pull_point_data(lat=lat_mf, lon=lon_mf, variable='snodsfc', level='sfc')) * 39.37
-    df_sd = xarr_to_dataframe(sd, f'snowDepth_inches_{model}')
-
-    qpf = ((ds.pull_point_data(lat=lat_mf, lon=lon_mf, variable='apcpsfc', level='sfc')) * 0.03937)
+    # Convert interval liquid precip from mm to inches.
+    qpf = ds.pull_liquid_precip_intervals(lat=lat_mf, lon=lon_mf, variable='apcpsfc') * 0.03937
     df_qpf = xarr_to_dataframe(qpf, f'qpf_{model}')
 
     hgt_1000 = ds.pull_point_data(lat=lat_mf, lon=lon_mf, level=1000.0, variable='hgtprs') / 10
@@ -54,19 +52,19 @@ def model_fz_level(model, lat_mf, lon_mf, date):
     snow_level = (((hgt_500 - hgt_1000) + tmp_700) * 128) - 64015
     df_snowlevel = xarr_to_dataframe(snow_level, f'snowLevel_{model}')
 
-    df = pd.concat([df_qpf, df_sd, df_snowlevel], axis=1)
-    #df = df['snowLevel'].resample('D').agg({'min', 'max', 'mean'})
+    df = pd.concat([df_qpf, df_snowlevel], axis=1)
+    # This is interval liquid precip, so use it directly for bar totals.
+    df[f'qpf_hr_{model}'] = df[f'qpf_{model}']
+    df[f'qpf_hr_{model}'] = df[f'qpf_hr_{model}'].fillna(0)
 
-    # Use a shift to get the hourly qpf (or 3 hourly depending on model).
-    df[f'qpf_hr_{model}'] = df[f'qpf_{model}'].shift(-1) - df[f'qpf_{model}']
-
-    # If you don't do this, you will get an error when plotting a color gradient under a qpf line curve (we
-    # currently don't plot this, but just in case...)
-    df[f'qpf_hr_{model}'].fillna(0, inplace=True)
-
-    # For use in our graph, we'll tally up any precipitation that falls when the snow level is below some threshold.
-    # In this case we're going to set the snow level at 5000 ft.
-    df[f'snow_hr_{model}'] = np.where(df[f'snowLevel_{model}'] <= 5000, df[f'qpf_hr_{model}'], 0)
+    # Align snow-level values to precip timestamps before classifying rain vs snow precip.
+    snow_level_at_qpf = df_snowlevel.reindex(df_qpf.index, method='nearest')
+    df[f'snow_hr_{model}'] = 0.0
+    df.loc[df_qpf.index, f'snow_hr_{model}'] = np.where(
+        snow_level_at_qpf[f'snowLevel_{model}'] <= 5000,
+        df_qpf[f'qpf_{model}'],
+        0,
+    )
     #df = df.add_suffix('_snowLevel')
     #df['Date'] = df.index
     return df
@@ -74,7 +72,8 @@ def model_fz_level(model, lat_mf, lon_mf, date):
 def xarr_to_dataframe(ds, name):
     ds.name = name
     df = ds.to_dataframe()
-    df.drop(columns=['lat', 'lon'], inplace=True)
+    if name in df.columns:
+        df = df[[name]]
     df.index = pd.to_datetime(df.index)
     df.index = df.index.tz_localize(tz=pytz.utc)
     df.index = df.index.tz_convert('US/Pacific')
@@ -85,7 +84,7 @@ def create_plot(df, model):
     plt.title('Precipitation and Snow Level Forecast: Middle Fork')
 
     color = 'tab:blue'
-    daily_df = df.resample('d').sum()
+    daily_df = df.resample('d').sum(numeric_only=True)
     date_format = mdates.DateFormatter("%a %m/%d")
     ax1.xaxis.set_major_formatter(date_format)
 
@@ -105,19 +104,23 @@ def create_plot(df, model):
     z[:, :, :3] = rgb
     z[:, :, -1] = np.linspace(0, alpha, 100)[:, None]
 
-    xmin, xmax, ymin, ymax = mdates.date2num(df.index.values).min(), \
-                             mdates.date2num(df.index.values).max(), 0, 10000
+    snow_series = df[f'snowLevel_{model}'].dropna()
+    if not snow_series.empty and snow_series.shape[0] > 1:
+        xvals = mdates.date2num(snow_series.index.values)
+        yvals = snow_series.values
+        xmin, xmax, ymin, ymax = xvals.min(), xvals.max(), 0, 10000
 
-    im = ax1.imshow(z, aspect='auto', extent=[xmin, xmax, ymin, ymax],
-                   origin='lower', zorder=1)
+        im = ax1.imshow(z, aspect='auto', extent=[xmin, xmax, ymin, ymax],
+                       origin='lower', zorder=1)
 
-    xy = np.column_stack([mdates.date2num(df.index.values), df[f'snowLevel_{model}']])
-    xy = np.vstack([[xmin, ymin], xy, [xmax, ymin], [xmin, ymin]])
-    clip_path = Polygon(xy, facecolor='none', edgecolor='none', closed=True)
-    ax1.add_patch(clip_path)
-    im.set_clip_path(clip_path)
-    line = ax1.plot(mdates.date2num(df.index.values), df[f'snowLevel_{model}'], color=[0, 57/255, 148/255],
-                    label="Snow Level")
+        xy = np.column_stack([xvals, yvals])
+        xy = np.vstack([[xmin, ymin], xy, [xmax, ymin], [xmin, ymin]])
+        clip_path = Polygon(xy, facecolor='none', edgecolor='none', closed=True)
+        ax1.add_patch(clip_path)
+        im.set_clip_path(clip_path)
+        line = ax1.plot(xvals, yvals, color=[0, 57/255, 148/255], label="Snow Level")
+    else:
+        line = ax1.plot([], [], color=[0, 57/255, 148/255], label="Snow Level")
     # --End-- Color Gradient
 
     ax2 = ax1.twinx()
@@ -128,7 +131,7 @@ def create_plot(df, model):
     qpf_bar = ax2.bar(daily_df.index, daily_df[f'qpf_hr_{model}'], color=color, alpha=0.7,
             label="Total Precip")
     sn_qpf_bar = ax2.bar(daily_df.index, daily_df[f'snow_hr_{model}'], color='tab:blue', alpha=0.7,
-            label="Amount of Total Precip Falling as Snow")
+            label="Precip with Snow Level <= 5000 ft")
 
     rects = ax2.patches
     # Make some labels.
