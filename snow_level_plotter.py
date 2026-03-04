@@ -41,8 +41,22 @@ def model_fz_level(model, lat_mf, lon_mf, date):
     #nn_ds = GRIB_DL(model='nam', model_run='12z', model_resolution='conusnest', date='20191230')
 
     # Convert interval liquid precip from mm to inches.
+    qpf_name = f'qpf_{model}'
     qpf = ds.pull_liquid_precip_intervals(lat=lat_mf, lon=lon_mf, variable='apcpsfc') * 0.03937
-    df_qpf = xarr_to_dataframe(qpf, f'qpf_{model}')
+    qpf_end = pd.DatetimeIndex(pd.to_datetime(qpf['time'].values, utc=True)).tz_convert('US/Pacific')
+    if 'interval_start' in qpf.coords:
+        qpf_start = pd.DatetimeIndex(pd.to_datetime(qpf['interval_start'].values, utc=True)).tz_convert('US/Pacific')
+    else:
+        start_series = pd.Series(qpf_end).shift(1)
+        if len(qpf_end) > 1:
+            start_series.iloc[0] = qpf_end[0] - (qpf_end[1] - qpf_end[0])
+        elif len(qpf_end) == 1:
+            start_series.iloc[0] = qpf_end[0] - pd.Timedelta(hours=3)
+        qpf_start = pd.DatetimeIndex(start_series.values)
+
+    qpf_start_col = f'qpf_start_{model}'
+    df_qpf = pd.DataFrame({qpf_name: qpf.values.astype(float)}, index=qpf_end)
+    df_qpf[qpf_start_col] = qpf_start
 
     hgt_1000 = ds.pull_point_data(lat=lat_mf, lon=lon_mf, level=1000.0, variable='hgtprs') / 10
     hgt_500 = ds.pull_point_data(lat=lat_mf, lon=lon_mf, level=500.0, variable='hgtprs') / 10
@@ -52,22 +66,76 @@ def model_fz_level(model, lat_mf, lon_mf, date):
     snow_level = (((hgt_500 - hgt_1000) + tmp_700) * 128) - 64015
     df_snowlevel = xarr_to_dataframe(snow_level, f'snowLevel_{model}')
 
-    df = pd.concat([df_qpf, df_snowlevel], axis=1)
-    # This is interval liquid precip, so use it directly for bar totals.
-    df[f'qpf_hr_{model}'] = df[f'qpf_{model}']
-    df[f'qpf_hr_{model}'] = df[f'qpf_hr_{model}'].fillna(0)
+    df = pd.concat([df_qpf[[qpf_name]], df_snowlevel], axis=1)
+    # pull_liquid_precip_intervals already returns per-interval precip (not cumulative).
+    df[f'qpf_hr_{model}'] = df[qpf_name].fillna(0)
 
-    # Align snow-level values to precip timestamps before classifying rain vs snow precip.
+    # Classify each interval's precip by snow level before aggregating to daily.
     snow_level_at_qpf = df_snowlevel.reindex(df_qpf.index, method='nearest')
+    snow_interval = np.where(
+        snow_level_at_qpf[f'snowLevel_{model}'] <= 5000,
+        df_qpf[qpf_name],
+        0.0,
+    )
     df[f'snow_hr_{model}'] = 0.0
     df.loc[df_qpf.index, f'snow_hr_{model}'] = np.where(
         snow_level_at_qpf[f'snowLevel_{model}'] <= 5000,
-        df_qpf[f'qpf_{model}'],
+        df.loc[df_qpf.index, f'qpf_hr_{model}'],
         0,
     )
+
+    # Split intervals at midnight (local time) so precip spanning days is allocated proportionally
+    # to each calendar day instead of being lumped into interval end-time day.
+    daily_qpf = split_intervals_to_daily_totals(
+        starts=df_qpf[qpf_start_col],
+        ends=df_qpf.index.to_series(index=df_qpf.index),
+        amounts=df_qpf[qpf_name],
+    )
+    daily_snow = split_intervals_to_daily_totals(
+        starts=df_qpf[qpf_start_col],
+        ends=df_qpf.index.to_series(index=df_qpf.index),
+        amounts=pd.Series(snow_interval, index=df_qpf.index),
+    )
+    daily_df = pd.concat(
+        [daily_qpf.rename(f'qpf_hr_{model}'), daily_snow.rename(f'snow_hr_{model}')],
+        axis=1,
+    ).fillna(0.0)
+    if len(df_qpf.index) > 0:
+        day_start = df_qpf[qpf_start_col].min().normalize()
+        day_end = df_qpf.index.max().normalize()
+        full_days = pd.date_range(start=day_start, end=day_end, freq='D', tz=df_qpf.index.tz)
+        daily_df = daily_df.reindex(full_days, fill_value=0.0)
+    df.attrs['daily_df'] = daily_df
     #df = df.add_suffix('_snowLevel')
     #df['Date'] = df.index
     return df
+
+def split_intervals_to_daily_totals(starts, ends, amounts):
+    totals = {}
+    for start, end, amount in zip(starts, ends, amounts):
+        if pd.isna(start) or pd.isna(end) or pd.isna(amount):
+            continue
+        amount = float(amount)
+        if amount <= 0:
+            continue
+        if end <= start:
+            continue
+
+        duration_seconds = (end - start).total_seconds()
+        cursor = start
+        while cursor < end:
+            next_midnight = cursor.normalize() + pd.Timedelta(days=1)
+            segment_end = min(end, next_midnight)
+            frac = (segment_end - cursor).total_seconds() / duration_seconds
+            day_key = cursor.normalize()
+            totals[day_key] = totals.get(day_key, 0.0) + (amount * frac)
+            cursor = segment_end
+
+    if not totals:
+        return pd.Series(dtype=float)
+    out = pd.Series(totals).sort_index()
+    out.index = pd.DatetimeIndex(out.index)
+    return out
 
 def xarr_to_dataframe(ds, name):
     ds.name = name
@@ -88,7 +156,14 @@ def create_plot(df, model):
     qpf_col = f'qpf_hr_{model}'
     snow_qpf_col = f'snow_hr_{model}'
     snow_level_col = f'snowLevel_{model}'
-    daily_df = df.resample('d').sum(numeric_only=True)
+    daily_df = df.attrs.get('daily_df')
+    if daily_df is None:
+        # Fallback if daily pre-aggregation was not attached by model_fz_level.
+        daily_df = df[[qpf_col, snow_qpf_col]].resample('d').sum()
+    else:
+        daily_df = daily_df.copy()
+    # Shift bar positions to noon so they center on each day.
+    daily_df.index = daily_df.index + pd.Timedelta(hours=12)
 
     xaxis_lowlimit = datetime.now(pytz.timezone('US/Pacific'))
     xaxis_uplimit = datetime.now(pytz.timezone('US/Pacific')) + timedelta(days=9)
@@ -116,7 +191,7 @@ def create_plot(df, model):
     fig.text(
         0.06,
         0.94,
-        'Green bars = Total daily precip. Blue bars = Portion of daily precip falling as snow',
+        'Green bars = Total daily precip. Blue bars = Precip that fell when snow level was below 5000 ft',
         ha='left',
         va='top',
         fontsize=13,
@@ -207,7 +282,7 @@ def create_plot(df, model):
             zorder=5,
         )
 
-    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+    ax1.xaxis.set_major_locator(mdates.HourLocator(byhour=12))
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%a %m/%d"))
     ax1.tick_params(axis='x', labelsize=13, colors=text_color, pad=10)
     for label in ax1.get_xticklabels():

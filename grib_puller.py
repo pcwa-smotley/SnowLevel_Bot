@@ -155,24 +155,52 @@ class GRIB_DL():
             variable_name = self._resolve_variable_name(variable)
             data_var = ds[variable_name].sel(lon=lon, lat=lat, method='nearest').load()
 
+            time_dim = data_var.dims[0] if data_var.dims else None
+            bounds_var = None
+            if time_dim:
+                candidate = f'{time_dim}_bounds'
+                if candidate in ds.data_vars:
+                    bounds_var = candidate
+                elif data_var.attrs.get('bounds') in ds.data_vars:
+                    bounds_var = data_var.attrs.get('bounds')
+
             # UCAR GFS exposes mixed-interval accumulation with bounds. Build non-overlapping
             # interval precip by differencing the cumulative series that shares the run start.
-            if 'time3' in data_var.dims and 'time3_bounds' in ds:
-                bounds = ds['time3_bounds'].sel(time3=data_var['time3']).load().values
+            # This captures the highest resolution available in the source (hourly/3-hourly/12-hourly).
+            if time_dim and bounds_var:
+                bounds = ds[bounds_var].sel({time_dim: data_var[time_dim]}).load().values
                 frame = pd.DataFrame({
                     'start': pd.to_datetime(bounds[:, 0]),
                     'end': pd.to_datetime(bounds[:, 1]),
                     'accum': data_var.values.astype(float),
                 })
-                run_start = frame['start'].min()
-                frame = frame.loc[frame['start'] == run_start].copy()
-                frame.sort_values('end', inplace=True)
-                frame.drop_duplicates(subset='end', keep='last', inplace=True)
-                frame['interval'] = frame['accum'].diff().fillna(frame['accum']).clip(lower=0.0)
+                frame = frame.loc[frame['end'] > frame['start']].copy()
+                frame.sort_values(['end', 'start'], inplace=True)
 
+                run_start = frame['start'].min()
+                cumulative = frame.loc[frame['start'] == run_start].copy()
+                cumulative.sort_values('end', inplace=True)
+                cumulative.drop_duplicates(subset='end', keep='last', inplace=True)
+
+                if len(cumulative) >= 1:
+                    cumulative['interval_start'] = cumulative['end'].shift(1, fill_value=run_start)
+                    cumulative['interval'] = cumulative['accum'].diff().fillna(cumulative['accum']).clip(lower=0.0)
+                    out = cumulative[['interval_start', 'end', 'interval']].copy()
+                else:
+                    # Fallback: if cumulative rows are missing, keep the shortest interval per end time.
+                    frame['duration'] = (frame['end'] - frame['start']).dt.total_seconds()
+                    shortest = frame.sort_values(['end', 'duration']).drop_duplicates(subset='end', keep='first')
+                    out = shortest.rename(columns={'start': 'interval_start', 'accum': 'interval'})[
+                        ['interval_start', 'end', 'interval']
+                    ].copy()
+
+                out = out.loc[out['end'] > out['interval_start']].copy()
                 interval = xr.DataArray(
-                    frame['interval'].to_numpy(dtype=float),
-                    coords={'time': frame['end'].to_numpy(dtype='datetime64[ns]')},
+                    out['interval'].to_numpy(dtype=float),
+                    coords={
+                        'time': out['end'].to_numpy(dtype='datetime64[ns]'),
+                        'interval_start': ('time', out['interval_start'].to_numpy(dtype='datetime64[ns]')),
+                    },
                     dims=('time',),
                     name=variable_name,
                 )
@@ -190,6 +218,17 @@ class GRIB_DL():
             first = normalized.isel(time=0).expand_dims(time=[normalized['time'].values[0]])
             interval = xr.concat([first, diffed], dim='time')
             interval = interval.clip(min=0.0)
+            if interval.sizes.get('time', 0) > 0:
+                times = pd.to_datetime(interval['time'].values)
+                if len(times) > 1:
+                    first_start = times[0] - (times[1] - times[0])
+                else:
+                    first_start = times[0] - pd.Timedelta(hours=3)
+                starts = pd.Series(times).shift(1)
+                starts.iloc[0] = first_start
+                interval = interval.assign_coords(
+                    interval_start=('time', starts.to_numpy(dtype='datetime64[ns]'))
+                )
             return interval
 
 
