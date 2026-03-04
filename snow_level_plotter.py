@@ -189,7 +189,7 @@ def create_plot(df, model, output_filename='qpf_graph.png', range_days=9):
     grid_color = '#253247'
 
     fig.suptitle(
-        'Middle Fork Forecast: Snow Level and Liquid Precipitation',
+        'Middle Fork 15-Day Forecast: Snow Level and Daily Precipitation',
         x=0.06,
         y=0.985,
         ha='left',
@@ -198,15 +198,30 @@ def create_plot(df, model, output_filename='qpf_graph.png', range_days=9):
         fontweight='bold',
         color=text_color,
     )
-    fig.text(
-        0.06,
-        0.94,
-        'Green bars = Total daily precip. Blue bars = Precip that fell when snow level was below 5000 ft',
-        ha='left',
-        va='top',
-        fontsize=13,
-        color=subtext_color,
-    )
+    subtitle_x = 0.06
+    subtitle_y = 0.94
+    subtitle_parts = [
+        ('Green', total_bar_color, 'bold'),
+        (' bars = Total daily precip. ', subtext_color, 'normal'),
+        ('Blue', cold_bar_color, 'bold'),
+        (' bars = Precip that fell when snow level was below 5000 ft', subtext_color, 'normal'),
+    ]
+    current_x = subtitle_x
+    for text_part, color_part, weight_part in subtitle_parts:
+        txt = fig.text(
+            current_x,
+            subtitle_y,
+            text_part,
+            ha='left',
+            va='top',
+            fontsize=13,
+            fontweight=weight_part,
+            color=color_part,
+        )
+        fig.canvas.draw()
+        bbox = txt.get_window_extent(renderer=fig.canvas.get_renderer())
+        fig_width_px = fig.get_size_inches()[0] * fig.dpi
+        current_x += bbox.width / fig_width_px
 
     snow_series = df[snow_level_col].dropna()
     if not snow_series.empty:
@@ -292,7 +307,12 @@ def create_plot(df, model, output_filename='qpf_graph.png', range_days=9):
             zorder=5,
         )
 
-    ax1.xaxis.set_major_locator(mdates.HourLocator(byhour=12))
+    tick_index = daily_df.index[(daily_df.index >= xaxis_lowlimit - pd.Timedelta(days=1)) &
+                                (daily_df.index <= xaxis_uplimit + pd.Timedelta(days=1))]
+    if len(tick_index) > 0:
+        ax1.xaxis.set_major_locator(ticker.FixedLocator(mdates.date2num(tick_index.to_pydatetime())))
+    else:
+        ax1.xaxis.set_major_locator(mdates.HourLocator(byhour=12))
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%a %m/%d"))
     x_label_rotation = 45 if range_days is None else 0
     ax1.tick_params(axis='x', labelsize=13, colors=text_color, pad=10, labelrotation=x_label_rotation)
