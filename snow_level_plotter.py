@@ -29,7 +29,8 @@ def main():
         if model == 'gfs':
             lon_mf = (360 + lon_mf)
         df = model_fz_level(model, lat_mf, lon_mf, today)
-        create_plot(df, model)
+        create_plot(df, model, output_filename='qpf_graph.png', range_days=9)
+        create_plot(df, model, output_filename='qpf_graph_full.png', range_days=None)
     return
 
 def model_fz_level(model, lat_mf, lon_mf, date):
@@ -147,7 +148,7 @@ def xarr_to_dataframe(ds, name):
     df.index = df.index.tz_convert('US/Pacific')
     return df
 
-def create_plot(df, model):
+def create_plot(df, model, output_filename='qpf_graph.png', range_days=9):
     fig, ax1 = plt.subplots(figsize=(14, 8), dpi=180, facecolor='#0b1220')
     ax1.set_facecolor('#111827')
     ax1.patch.set_edgecolor('#334155')
@@ -166,7 +167,16 @@ def create_plot(df, model):
     daily_df.index = daily_df.index + pd.Timedelta(hours=12)
 
     xaxis_lowlimit = datetime.now(pytz.timezone('US/Pacific'))
-    xaxis_uplimit = datetime.now(pytz.timezone('US/Pacific')) + timedelta(days=9)
+    if range_days is None:
+        if len(daily_df.index) > 0:
+            xaxis_uplimit = daily_df.index.max() + pd.Timedelta(hours=18)
+            min_span = xaxis_lowlimit + timedelta(days=1)
+            if xaxis_uplimit < min_span:
+                xaxis_uplimit = min_span
+        else:
+            xaxis_uplimit = xaxis_lowlimit + timedelta(days=9)
+    else:
+        xaxis_uplimit = xaxis_lowlimit + timedelta(days=range_days)
     ax1.set_xlim([xaxis_lowlimit, xaxis_uplimit])
     ax1.set_ylim([0.0, 10000])
 
@@ -284,9 +294,12 @@ def create_plot(df, model):
 
     ax1.xaxis.set_major_locator(mdates.HourLocator(byhour=12))
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%a %m/%d"))
-    ax1.tick_params(axis='x', labelsize=13, colors=text_color, pad=10)
+    x_label_rotation = 45 if range_days is None else 0
+    ax1.tick_params(axis='x', labelsize=13, colors=text_color, pad=10, labelrotation=x_label_rotation)
     for label in ax1.get_xticklabels():
         label.set_fontweight('semibold')
+        if x_label_rotation:
+            label.set_ha('right')
 
     for spine in ['top']:
         ax1.spines[spine].set_visible(False)
@@ -295,7 +308,8 @@ def create_plot(df, model):
     ax1.spines['bottom'].set_color('#64748b')
     ax2.spines['right'].set_color('#64748b')
 
-    fig.subplots_adjust(left=0.08, right=0.92, top=0.82, bottom=0.2)
+    bottom_margin = 0.26 if range_days is None else 0.2
+    fig.subplots_adjust(left=0.08, right=0.92, top=0.82, bottom=bottom_margin)
     snow_handle = ax1.lines[0]
     legend = fig.legend(
         handles=[qpf_bar, sn_qpf_bar, snow_handle],
@@ -316,7 +330,7 @@ def create_plot(df, model):
     for txt in legend.get_texts():
         txt.set_color('#e2e8f0')
 
-    plt.savefig(os.path.join(imgdir, 'qpf_graph.png'), dpi=230, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.savefig(os.path.join(imgdir, output_filename), dpi=230, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
     return
 
